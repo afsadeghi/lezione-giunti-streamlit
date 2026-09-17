@@ -17,6 +17,8 @@ from lesson_engine import (
 BASE_DIR = Path(__file__).parent
 IMAGE_PATH = BASE_DIR / "assets" / "guida_giunti.png"
 VIDEO_PATH = BASE_DIR / "assets" / "lezione_giunti.mp4"
+QR_PATH = BASE_DIR / "assets" / "qr_lezione_giunti.png"
+PUBLIC_URL = "https://lezione-giunti-app-ogwek7gq5lywikzmyj2tho.streamlit.app/"
 
 st.set_page_config(
     page_title="Laboratorio sui giunti meccanici",
@@ -110,10 +112,18 @@ if st.session_state.stage == 0:
     c1.info("**1. Osserva**\n\nLeggi un'infografica tecnica.")
     c2.info("**2. Calcola**\n\nUsa potenza, giri e servizio.")
     c3.info("**3. Decidi**\n\nScegli e difendi la soluzione.")
-    student_name = st.text_input("Nome dello studente (facoltativo)", key="student_name")
-    if st.button("Inizia il percorso", type="primary"):
-        go_to(1)
-        st.rerun()
+    qr_col, start_col = st.columns([1, 2], vertical_alignment="center")
+    with qr_col:
+        st.image(str(QR_PATH), width=220)
+        st.caption("Scansiona il QR code dalla lavagna")
+    with start_col:
+        st.markdown("#### Partecipa dal cellulare")
+        st.write("Inquadra il QR code con la fotocamera oppure apri direttamente il collegamento.")
+        st.link_button("Apri la lezione sul dispositivo", PUBLIC_URL, use_container_width=True)
+        student_name = st.text_input("Nome o codice dello studente (facoltativo)", key="student_name")
+        if st.button("Inizia il percorso", type="primary", use_container_width=True):
+            go_to(1)
+            st.rerun()
 
 
 elif st.session_state.stage == 1:
