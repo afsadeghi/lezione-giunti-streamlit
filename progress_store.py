@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ProgressStoreError(RuntimeError):
@@ -46,8 +50,14 @@ class ProgressStore:
                 "get_lesson_progress",
                 {"p_student_code": student_code},
             )
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise ProgressStoreError("Non riesco a recuperare il percorso salvato.") from exc
+        except HTTPError as exc:
+            self._log_http_error("recupero", exc)
+            raise ProgressStoreError(self._friendly_http_error("recuperare", exc.code)) from exc
+        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            LOGGER.exception("Errore di rete o risposta non valida durante il recupero Supabase")
+            raise ProgressStoreError(
+                "Non riesco a collegarmi al database per recuperare il percorso salvato."
+            ) from exc
         return progress if isinstance(progress, dict) else None
 
     def save(self, student_code: str, progress: Mapping[str, Any]) -> None:
@@ -56,8 +66,14 @@ class ProgressStore:
                 "save_lesson_progress",
                 {"p_student_code": student_code, "p_progress": dict(progress)},
             )
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise ProgressStoreError("Non riesco a salvare il percorso in questo momento.") from exc
+        except HTTPError as exc:
+            self._log_http_error("salvataggio", exc)
+            raise ProgressStoreError(self._friendly_http_error("salvare", exc.code)) from exc
+        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            LOGGER.exception("Errore di rete o risposta non valida durante il salvataggio Supabase")
+            raise ProgressStoreError(
+                "Non riesco a collegarmi al database per salvare il percorso."
+            ) from exc
 
     def _post(self, function_name: str, payload: Mapping[str, Any]) -> Any:
         request = Request(
@@ -69,3 +85,27 @@ class ProgressStore:
         with urlopen(request, timeout=self.timeout) as response:
             body = response.read()
         return json.loads(body.decode("utf-8")) if body else None
+
+    @staticmethod
+    def _friendly_http_error(action: str, status: int) -> str:
+        if status in (401, 403):
+            detail = "La chiave Supabase non è valida oppure non ha i permessi necessari."
+        elif status == 404:
+            detail = "La funzione richiesta non esiste nel progetto Supabase indicato."
+        else:
+            detail = f"Supabase ha restituito l'errore HTTP {status}."
+        return f"Non riesco a {action} il percorso. {detail}"
+
+    @staticmethod
+    def _log_http_error(operation: str, exc: HTTPError) -> None:
+        """Registra il dettaglio Supabase senza esporre URL o chiavi segrete."""
+        try:
+            response_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            response_body = "<risposta non leggibile>"
+        LOGGER.error(
+            "Errore Supabase durante %s: HTTP %s - %s",
+            operation,
+            exc.code,
+            response_body[:2000],
+        )
