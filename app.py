@@ -5,12 +5,14 @@ from pathlib import Path
 import streamlit as st
 
 from lesson_engine import (
+    CouplingDesignInput,
     SOCRATIC_QUESTIONS,
     build_report,
     design_torque,
     evaluate_open_answer,
     evaluate_socratic_answer,
     nominal_torque,
+    recommend_coupling,
 )
 
 
@@ -58,6 +60,10 @@ DEFAULTS = {
     "socratic_model_shown": False,
     "socratic_encouragement": "",
     "socratic_done": False,
+    "design_done": False,
+    "design_result": None,
+    "design_reflection": "",
+    "design_prediction": None,
     "open_done": False,
     "open_attempts": 0,
     "open_answer_saved": "",
@@ -79,7 +85,7 @@ st.markdown(
     """
     <div class="hero">
       <h1>⚙️ Laboratorio: scegliere un giunto meccanico</h1>
-      <p>Osserva, calcola, scegli e motiva. Il percorso cambia quando emerge una difficoltà.</p>
+      <p>Osserva, calcola, progetta e motiva. Impara a controllare anche il tuo modo di ragionare.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -87,10 +93,10 @@ st.markdown(
 
 with st.sidebar:
     st.header("Il tuo percorso")
-    labels = ["Introduzione", "Osserva", "Calcola", "Scegli", "Ragiona", "Motiva", "Risultati"]
-    progress_index = min(st.session_state.stage, 6)
-    st.progress(progress_index / 6 if progress_index else 0)
-    st.caption(f"Fase {progress_index + 1} di 7: {labels[progress_index]}")
+    labels = ["Introduzione", "Osserva", "Calcola", "Scegli", "Ragiona", "Progetta", "Motiva", "Risultati"]
+    progress_index = min(st.session_state.stage, 7)
+    st.progress(progress_index / 7 if progress_index else 0)
+    st.caption(f"Fase {progress_index + 1} di 8: {labels[progress_index]}")
     for i, label in enumerate(labels):
         symbol = "✅" if i < progress_index else ("▶️" if i == progress_index else "○")
         st.write(f"{symbol} {label}")
@@ -106,7 +112,7 @@ if st.session_state.stage == 0:
     st.subheader("Obiettivo")
     st.write(
         "Al termine saprai riconoscere le funzioni principali di un giunto, "
-        "calcolare la coppia di progetto e motivare una scelta tecnica."
+        "calcolare la coppia di progetto, confrontare alternative e motivare una scelta tecnica."
     )
     c1, c2, c3 = st.columns(3)
     c1.info("**1. Osserva**\n\nLeggi un'infografica tecnica.")
@@ -339,13 +345,127 @@ elif st.session_state.stage == 4:
         with st.expander("Rivedi i tuoi ragionamenti"):
             for index, saved_answer in enumerate(st.session_state.socratic_answers, start=1):
                 st.markdown(f"**{index}.** {saved_answer}")
-    if st.session_state.socratic_done and st.button("Continua alla motivazione finale →", type="primary"):
+    if st.session_state.socratic_done and st.button("Continua al laboratorio di progettazione →", type="primary"):
         go_to(5)
         st.rerun()
 
 
 elif st.session_state.stage == 5:
-    st.subheader("5. Motiva la decisione")
+    st.subheader("5. Laboratorio PROGETTA")
+    st.write(
+        "Ora affronta un piccolo incarico reale. Il sistema non sostituisce il progettista: "
+        "rende visibili requisiti, ipotesi, alternative e verifiche ancora necessarie."
+    )
+    with st.expander("Il metodo di pensiero progettuale meccanico", expanded=False):
+        st.markdown(
+            "**P**roblema → **R**equisiti → **O**sservazione fisica → **G**uasti possibili → "
+            "**E**laborazione del modello → **T**entativi → **T**est → **A**rgomentazione"
+        )
+
+    st.markdown("#### P — Comprendi il problema")
+    st.info(
+        "Un motore elettrico deve azionare una macchina utilizzatrice. Devi proporre una "
+        "famiglia di giunti e indicare che cosa controlleresti prima dell'acquisto."
+    )
+    prediction = st.radio(
+        "Prima dei calcoli, quale famiglia prevedi?",
+        ["Giunto elastico", "Giunto a soffietto/lamellare", "Giunto rigido", "Giunto magnetico"],
+        index=None,
+        key="design_prediction",
+        help="La previsione non viene valutata come errore: servirà per confrontare il pensiero iniziale con l'esito.",
+    )
+
+    st.markdown("#### R–O–G — Definisci requisiti, fenomeni e rischi")
+    with st.form("design_form"):
+        c1, c2, c3 = st.columns(3)
+        project_power = c1.number_input("Potenza [kW]", min_value=0.5, max_value=500.0, value=15.0, step=0.5)
+        project_rpm = c2.number_input("Velocità [giri/min]", min_value=50, max_value=10000, value=1450, step=50)
+        project_service = c3.select_slider("Fattore di servizio Ks", [1.0, 1.2, 1.5, 1.8, 2.0], value=1.5)
+        c4, c5 = st.columns(2)
+        project_misalignment = c4.selectbox("Disallineamento previsto", ["Nullo", "Piccolo", "Medio"], index=1)
+        project_vibrations = c5.selectbox("Vibrazioni", ["Basse", "Medie", "Alte"], index=1)
+        c6, c7, c8 = st.columns(3)
+        project_load = c6.selectbox("Andamento del carico", ["Uniforme", "Variabile", "Con urti"], index=1)
+        project_precision = c7.selectbox("Precisione torsionale", ["Normale", "Elevata"])
+        project_environment = c8.selectbox("Ambiente", ["Normale", "Tenuta ermetica/ambiente critico"])
+        analyze = st.form_submit_button("Analizza e confronta le alternative", type="primary", use_container_width=True)
+
+    if analyze:
+        project_data = CouplingDesignInput(
+            power_kw=float(project_power),
+            rpm=int(project_rpm),
+            service_factor=float(project_service),
+            misalignment=project_misalignment,
+            vibrations=project_vibrations,
+            load=project_load,
+            precision=project_precision,
+            environment=project_environment,
+        )
+        recommendation = recommend_coupling(project_data)
+        st.session_state.design_result = {
+            "family": recommendation.family,
+            "nominal_torque": recommendation.nominal_torque,
+            "design_torque": recommendation.design_torque,
+            "scores": recommendation.scores,
+            "reasons": recommendation.reasons,
+            "risk": recommendation.principal_risk,
+            "checks": recommendation.checks,
+            "prediction": prediction or "Nessuna previsione",
+        }
+
+    result_data = st.session_state.design_result
+    if result_data:
+        st.divider()
+        st.markdown("#### E–T–T — Modella, confronta e verifica")
+        m1, m2 = st.columns(2)
+        m1.metric("Coppia nominale", f"{result_data['nominal_torque']:.1f} N·m")
+        m2.metric("Coppia di progetto", f"{result_data['design_torque']:.1f} N·m")
+        st.success(f"**Prima ipotesi consigliata: {result_data['family']}**")
+        st.write("Perché: " + "; ".join(result_data["reasons"]) + ".")
+
+        if result_data["prediction"] == result_data["family"]:
+            st.info("La tua previsione coincide con la prima ipotesi. Ora controlla se la motivazione era la stessa.")
+        else:
+            st.info(
+                f"La tua previsione era **{result_data['prediction']}**. La differenza non è un errore: "
+                "individua quale requisito ha modificato la decisione."
+            )
+
+        with st.expander("Confronta tutte le alternative", expanded=True):
+            highest = max(score for _, score in result_data["scores"]) or 1
+            for family, score in result_data["scores"]:
+                st.write(f"**{family} — compatibilità relativa {score}**")
+                st.progress(score / highest)
+            st.caption("Il confronto è didattico: il punteggio rende esplicite le regole, non certifica il componente.")
+
+        st.warning("**Guasto da non ignorare:** " + result_data["risk"])
+        with st.expander("Verifiche prima della scelta definitiva"):
+            for check in result_data["checks"]:
+                st.write("☐ " + check)
+
+        st.markdown("#### A — Argomenta e controlla il tuo pensiero")
+        confidence = st.slider("Quanto sei sicuro della scelta?", 0, 100, 60, 5, format="%d%%")
+        weakest = st.text_input(
+            "Qual è l'ipotesi più debole del progetto?",
+            placeholder="Per esempio: non conosco il disallineamento reale a caldo...",
+        )
+        next_check = st.text_input(
+            "Quale dato o prova cercheresti per verificarla?",
+            placeholder="Per esempio: misura di allineamento o catalogo del costruttore...",
+        )
+        if st.button("Salva la riflessione e continua →", type="primary"):
+            st.session_state.design_reflection = (
+                f"Sicurezza dichiarata: {confidence}%. Ipotesi più debole: "
+                f"{weakest.strip() or 'da individuare'}. Verifica proposta: "
+                f"{next_check.strip() or 'da definire'}."
+            )
+            st.session_state.design_done = True
+            go_to(6)
+            st.rerun()
+
+
+elif st.session_state.stage == 6:
+    st.subheader("6. Motiva la decisione")
     st.write(
         "Scrivi una breve motivazione tecnica. Spiega il tipo di giunto, i problemi che deve gestire "
         "e quale verifica numerica completerebbe la selezione."
@@ -377,7 +497,7 @@ elif st.session_state.stage == 5:
             st.warning("Da aggiungere: " + "; ".join(result.missing))
             st.caption("Puoi modificare la risposta e richiedere nuovamente il feedback.")
         if result.score >= 3 and st.button("Vai ai risultati →", type="primary"):
-            go_to(6)
+            go_to(7)
             st.rerun()
         elif st.session_state.open_attempts >= 3:
             st.success(
@@ -386,7 +506,7 @@ elif st.session_state.stage == 5:
                 "coppia di progetto sia inferiore a quella ammessa dal catalogo."
             )
             if st.button("Ho capito, vai ai risultati →", type="primary"):
-                go_to(6)
+                go_to(7)
                 st.rerun()
         else:
             st.caption(
@@ -396,14 +516,14 @@ elif st.session_state.stage == 5:
 
 
 else:
-    st.subheader("6. Risultati e relazione")
+    st.subheader("7. Risultati e relazione")
     mn = st.session_state.get("last_mn", nominal_torque(15, 1450))
     mp = st.session_state.get("last_mp", design_torque(15, 1450, 1.5))
     answer = st.session_state.open_answer_saved
     result = evaluate_open_answer(answer)
     total = st.session_state.quiz_score + result.score
     max_total = 7
-    st.markdown('<div class="step-ok"><strong>Percorso completato.</strong> Hai osservato, calcolato, scelto e motivato.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="step-ok"><strong>Percorso completato.</strong> Hai osservato, calcolato, progettato e motivato.</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     c1.metric("Domande guidate", f"{st.session_state.quiz_score}/3")
     c2.metric("Motivazione", f"{result.score}/4")
@@ -420,6 +540,14 @@ else:
         answer,
         result,
         st.session_state.socratic_answers,
+        (
+            f"Prima ipotesi: {st.session_state.design_result['family']}; "
+            f"coppia di progetto: {st.session_state.design_result['design_torque']:.1f} N·m; "
+            f"rischio principale: {st.session_state.design_result['risk']}"
+            if st.session_state.design_result
+            else ""
+        ),
+        st.session_state.design_reflection,
     )
     st.download_button(
         "Scarica la relazione (.txt)",
