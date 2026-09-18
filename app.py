@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -14,6 +16,7 @@ from lesson_engine import (
     nominal_torque,
     recommend_coupling,
 )
+from progress_store import ProgressStore, ProgressStoreError
 
 
 BASE_DIR = Path(__file__).parent
@@ -67,9 +70,59 @@ DEFAULTS = {
     "open_done": False,
     "open_attempts": 0,
     "open_answer_saved": "",
+    "student_name": "",
 }
 for key, value in DEFAULTS.items():
     st.session_state.setdefault(key, value.copy() if isinstance(value, list) else value)
+
+
+PERSISTED_KEYS = tuple(key for key in DEFAULTS if key != "student_name") + ("last_mn", "last_mp")
+try:
+    PROGRESS_STORE = ProgressStore.from_secrets(st.secrets)
+except Exception:
+    PROGRESS_STORE = None
+
+
+def progress_snapshot() -> dict:
+    """Restituisce soltanto i dati didattici che devono sopravvivere alla sessione."""
+    return {
+        key: st.session_state[key]
+        for key in PERSISTED_KEYS
+        if key in st.session_state
+    }
+
+
+def snapshot_digest(snapshot: dict | None = None) -> str:
+    return json.dumps(snapshot or progress_snapshot(), ensure_ascii=False, sort_keys=True)
+
+
+def restore_progress(saved: dict) -> None:
+    for key in PERSISTED_KEYS:
+        if key in saved:
+            st.session_state[key] = saved[key]
+    st.session_state.stage = min(7, max(0, int(st.session_state.stage)))
+
+
+def normalize_student_code(raw_code: str) -> str:
+    return re.sub(r"[^A-Z0-9-]", "", raw_code.upper().strip())
+
+
+def save_progress(force: bool = False) -> bool:
+    """Salva solo se i dati sono cambiati, evitando scritture inutili."""
+    if PROGRESS_STORE is None or not st.session_state.get("progress_identity_ready"):
+        return False
+    snapshot = progress_snapshot()
+    digest = snapshot_digest(snapshot)
+    if not force and digest == st.session_state.get("last_saved_digest"):
+        return True
+    try:
+        PROGRESS_STORE.save(st.session_state.student_code, snapshot)
+    except ProgressStoreError as exc:
+        st.session_state.save_error = str(exc)
+        return False
+    st.session_state.last_saved_digest = digest
+    st.session_state.save_error = ""
+    return True
 
 
 def go_to(stage: int) -> None:
@@ -79,6 +132,50 @@ def go_to(stage: int) -> None:
 def reset_lesson() -> None:
     for key, value in DEFAULTS.items():
         st.session_state[key] = value.copy() if isinstance(value, list) else value
+    for key in list(st.session_state):
+        if key.startswith("socratic_response_"):
+            del st.session_state[key]
+
+
+if PROGRESS_STORE is not None and not st.session_state.get("progress_identity_ready", False):
+    st.title("⚙️ Lezione sui giunti meccanici")
+    st.subheader("Entra o riprendi il percorso")
+    st.write(
+        "Inserisci sempre lo stesso codice: l'app recupererà automaticamente il punto "
+        "raggiunto e le risposte già salvate."
+    )
+    with st.form("student_access_form"):
+        raw_code = st.text_input(
+            "Codice personale",
+            placeholder="Esempio: AMI-4827",
+            help="Usa 6–12 caratteri. Non inserire cognome, data di nascita o altri dati personali.",
+        )
+        access_submit = st.form_submit_button("Entra o continua", type="primary", use_container_width=True)
+    if access_submit:
+        code = normalize_student_code(raw_code)
+        if not 6 <= len(code) <= 20:
+            st.warning("Scegli un codice tra 6 e 20 caratteri, usando lettere, numeri o trattino.")
+        else:
+            try:
+                saved_progress = PROGRESS_STORE.load(code)
+            except ProgressStoreError as exc:
+                st.error(str(exc) + " Riprova tra poco.")
+            else:
+                reset_lesson()
+                if saved_progress:
+                    restore_progress(saved_progress)
+                st.session_state.student_code = code
+                st.session_state.progress_identity_ready = True
+                st.session_state.last_saved_digest = snapshot_digest(saved_progress) if saved_progress else ""
+                st.session_state.resume_notice = bool(saved_progress)
+                save_progress(force=not bool(saved_progress))
+                st.rerun()
+    st.info("Conserva il codice: servirà per continuare anche da un altro dispositivo.")
+    st.stop()
+
+
+# Al primo ciclo dopo una modifica/rerun salva lo stato prodotto dal ciclo precedente.
+save_progress()
 
 
 st.markdown(
@@ -91,8 +188,31 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if st.session_state.pop("resume_notice", False):
+    st.success(
+        f"Bentornato! Ho recuperato il percorso **{st.session_state.student_code}**: "
+        f"riparti dalla fase {st.session_state.stage + 1} di 8."
+    )
+
 with st.sidebar:
     st.header("Il tuo percorso")
+    if PROGRESS_STORE is not None:
+        st.caption(f"☁️ Salvataggio automatico · **{st.session_state.student_code}**")
+        if st.session_state.get("save_error"):
+            st.warning(st.session_state.save_error)
+        if st.button("Cambia studente", use_container_width=True):
+            save_progress(force=True)
+            reset_lesson()
+            for key in (
+                "student_code",
+                "progress_identity_ready",
+                "last_saved_digest",
+                "save_error",
+            ):
+                st.session_state.pop(key, None)
+            st.rerun()
+    else:
+        st.caption("⚠️ Salvataggio permanente non ancora collegato")
     labels = ["Introduzione", "Osserva", "Calcola", "Scegli", "Ragiona", "Progetta", "Motiva", "Risultati"]
     progress_index = min(st.session_state.stage, 7)
     st.progress(progress_index / 7 if progress_index else 0)
@@ -105,6 +225,7 @@ with st.sidebar:
         st.warning("Questa azione cancella le risposte della sessione corrente.")
         if st.button("Azzera e ricomincia", type="secondary", use_container_width=True):
             reset_lesson()
+            save_progress(force=True)
             st.rerun()
 
 
@@ -126,7 +247,7 @@ if st.session_state.stage == 0:
         st.markdown("#### Partecipa dal cellulare")
         st.write("Inquadra il QR code con la fotocamera oppure apri direttamente il collegamento.")
         st.link_button("Apri la lezione sul dispositivo", PUBLIC_URL, use_container_width=True)
-        student_name = st.text_input("Nome o codice dello studente (facoltativo)", key="student_name")
+        student_name = st.text_input("Nome da inserire nella relazione (facoltativo)", key="student_name")
         if st.button("Inizia il percorso", type="primary", use_container_width=True):
             go_to(1)
             st.rerun()
@@ -533,7 +654,7 @@ else:
     else:
         st.success("La motivazione contiene tutti i criteri attesi.")
     report = build_report(
-        st.session_state.get("student_name", "Studente"),
+        st.session_state.get("student_name") or st.session_state.get("student_code", "Studente"),
         st.session_state.quiz_score,
         mn,
         mp,
@@ -559,3 +680,7 @@ else:
     with st.expander("Leggi la relazione"):
         st.text(report)
     st.caption("Il punteggio è formativo: il docente conserva il controllo della valutazione finale.")
+
+
+# Salva anche le modifiche che non provocano un rerun esplicito.
+save_progress()
